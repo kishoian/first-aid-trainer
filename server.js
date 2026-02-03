@@ -21,6 +21,19 @@ if (!BOT_TOKEN) {
     process.exit(1);
 }
 
+const { Telegraf } = require('telegraf');
+const bot = new Telegraf(BOT_TOKEN);
+
+bot.start((ctx) => {
+    ctx.reply('Добро пожаловать в тренажёр первой помощи!\n\nНажми кнопку ниже, чтобы начать.', {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: 'Открыть тренажёр', web_app: { url: 'https://firstaid.kishoianrs.ru' } }]
+            ]
+        }
+    });
+});
+
 const PORT = process.env.PORT || 3000;
 const app = express();
 app.use(express.json());
@@ -197,7 +210,10 @@ app.use(express.static(path.join(__dirname)));
 // ─── Старт сервера ──────────────────────────────────────────
 app.listen(PORT, () => {
     console.log(`✅ Сервер запущен на http://localhost:${PORT}`);
-    console.log(`   Для тестирования Mini App используйте ngrok:`);
-    console.log(`   npx ngrok http ${PORT}`);
-    console.log(`   Полученный URL укажите в @BotFather → Edit Mini App`);
 });
+
+bot.launch();
+console.log('✅ Бот запущен');
+
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
