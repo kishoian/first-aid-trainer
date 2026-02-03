@@ -24,11 +24,11 @@ function shuf(a) {
 
 // Константы и состояние
 const DT = 20; // Decision Timer (секунды на ответ)
+let lastSc = -1; // последний сценарий (для исключения повторов подряд)
 
 let S = {
     sc: 'intro',      // текущий экран
-    ord: [],          // порядок сценариев
-    pos: 0,           // текущая позиция в сценариях
+    ci: 0,            // индекс текущего сценария
     si: 0,            // текущий шаг в сценарии
     sel: null,        // выбранный ответ
     fb: false,        // показан ли фидбек
@@ -39,11 +39,11 @@ let S = {
     dt: DT,           // оставшееся время на решение
     t1: null,         // интервал общего таймера
     t2: null,         // интервал таймера решения
-    res: []           // результаты всех сценариев
+    res: null         // результат текущего сценария
 };
 
 // Функции работы со сценариями
-function csc() { return SC[S.ord[S.pos]]; }
+function csc() { return SC[S.ci]; }
 function cst() { return csc().steps[S.si]; }
 
 // Таймеры
@@ -99,15 +99,17 @@ function onTO() {
 // Управление игрой
 function begin() {
     S.sc = 'playing';
-    S.ord = shuf([...Array(SC.length).keys()]);
-    S.pos = 0;
+    let ci;
+    do { ci = Math.floor(Math.random() * SC.length); } while (ci === lastSc && SC.length > 1);
+    lastSc = ci;
+    S.ci = ci;
     S.si = 0;
     S.sel = null;
     S.fb = false;
     S.to = false;
     S.ans = [];
     S.el = 0;
-    S.res = [];
+    S.res = null;
     S.cp = shuf([0, 1, 2]);
     R();
     startT();
@@ -136,34 +138,15 @@ function ns() {
         R();
         startT();
     } else {
-        S.res.push({
+        S.res = {
             ans: [...S.ans],
             el: S.el,
             tot: sc.steps.length,
-            oi: S.ord[S.pos]
-        });
-        S.sc = 'sc_result';
+            oi: S.ci
+        };
+        S.sc = 'finish';
         stopT();
-        R();
-    }
-}
-
-function nsc() {
-    if (S.pos < S.ord.length - 1) {
-        S.pos++;
-        S.si = 0;
-        S.sel = null;
-        S.fb = false;
-        S.to = false;
-        S.ans = [];
-        S.el = 0;
-        S.cp = shuf([0, 1, 2]);
-        S.sc = 'playing';
-        R();
-        startT();
-    } else {
         saveRun(S.res);
-        S.sc = 'final';
         R();
     }
 }
@@ -184,13 +167,28 @@ function showLeaderboard() {
     R();
 }
 
+// Анимация счётчика на финише
+function animatePct(target) {
+    const el = document.getElementById('finish-pct');
+    if (!el) return;
+    const start = performance.now();
+    const dur = 900;
+    (function step(now) {
+        const t = Math.min((now - start) / dur, 1);
+        el.textContent = Math.round((1 - Math.pow(1 - t, 3)) * target) + '%';
+        if (t < 1) requestAnimationFrame(step);
+    })(start);
+}
+
 // Рендеринг
 function R() {
     const a = document.getElementById('app');
     if (S.sc === 'intro') renderIntro();
     else if (S.sc === 'playing') a.innerHTML = rP();
-    else if (S.sc === 'sc_result') a.innerHTML = rSR();
-    else if (S.sc === 'final') renderFinal();
+    else if (S.sc === 'finish') {
+        a.innerHTML = rFinish();
+        animatePct(Math.round(S.res.ans.filter(x => x.ok).length / S.res.tot * 100));
+    }
     else if (S.sc === 'stats') renderStats();
     else if (S.sc === 'leaderboard') renderLeaderboard();
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -202,11 +200,6 @@ async function renderIntro() {
     a.innerHTML = '<div style="text-align:center;padding:60px 0"><div style="font-size:36px">⏳</div></div>';
     const history = await loadHistory();
     a.innerHTML = rI(history);
-}
-
-async function renderFinal() {
-    saveRun(S.res);
-    document.getElementById('app').innerHTML = rF();
 }
 
 async function renderStats() {
@@ -223,21 +216,22 @@ async function renderLeaderboard() {
     a.innerHTML = rLeaderboard(data);
 }
 
+// ─── Экран: Intro ────────────────────────────────────────
 function rI(history) {
     let teaser = '';
     if (history.length > 0) {
         const best = Math.max(...history.map(r => r.totalPct));
+        const avg = Math.round(history.reduce((s, r) => s + r.totalPct, 0) / history.length);
         const n = history.length;
-        const gw = n === 1 ? 'игра' : n < 5 ? 'игры' : 'игр';
+        const gw = n === 1 ? 'сценарий' : n < 5 ? 'сценария' : 'сценариев';
         teaser = `
             <div class="intro-teaser">
-                <span>Лучший: <b style="color:${gr(best).c}">${best}%</b> · ${n} ${gw}</span>
+                <span>Лучший: <b style="color:${gr(best).c}">${best}%</b> · Ср: <b style="color:${gr(avg).c}">${avg}%</b> · ${n} ${gw}</span>
                 <button class="stats-btn" onclick="showStats()">📊 Статистика</button>
             </div>
         `;
     }
 
-    // Профиль пользователя из Telegram
     let profile = '';
     if (TG_USER) {
         profile = `
@@ -256,31 +250,34 @@ function rI(history) {
                 <div class="intro-ring"></div>
             </div>
             <h1>Тренажёр<br><span>первой помощи</span></h1>
-            <p class="sub">12 экстренных ситуаций в случайном порядке. Вы не знаете заранее, что вас ждёт. 20 секунд на решение — как в жизни. Будет сложно.</p>
+            <p class="sub">Случайная экстренная ситуация. 4–5 шагов — 20 секунд на каждое решение, как в реальности.</p>
             <button class="btn-primary" onclick="begin()">Начать</button>
-            <p class="meta">12 ситуаций · ~15 мин · варианты перемешаны</p>
+            <p class="meta">сценарий подбирается случайно · варианты перемешаны</p>
             ${teaser}
             <button class="stats-btn leaderboard-btn" onclick="showLeaderboard()">🏆 Лидерборд</button>
         </div>
     `;
 }
 
+// ─── Экран: Playing ──────────────────────────────────────
 function rP() {
     const sc = csc();
     const st = cst();
     const cn = S.ans.filter(a => a.ok).length;
-    const tn = SC.length;
 
-    // Глобальный прогресс
+    // Прогресс по шагам текущего сценария
     let gp = '';
-    for (let i = 0; i < tn; i++) {
-        const sl = SC[S.ord[i]] ? SC[S.ord[i]].steps.length : 4;
-        const p = i < S.pos ? 100 : i === S.pos ? Math.round(S.si / sl * 100) : 0;
-        const c = i < S.pos ? '#2ec4b6' : i === S.pos ? sc.color : 'transparent';
-        gp += `<div class="gp-seg"><div class="gp-fill" style="width:${p}%;background:${c}"></div></div>`;
+    for (let i = 0; i < sc.steps.length; i++) {
+        const answered = i < S.si || (i === S.si && S.fb);
+        let w = answered ? 100 : 0, c = 'transparent';
+        if (answered) {
+            const a = S.ans.find(x => x.si === i);
+            c = a?.ok ? '#2ec4b6' : a?.cr ? '#e63946' : a?.to ? '#6b7280' : '#f77f00';
+        }
+        gp += `<div class="gp-seg"><div class="gp-fill" style="width:${w}%;background:${c}"></div></div>`;
     }
 
-    // Локация (только на первом шаге)
+    // Локация (только на первом шаге, до ответа)
     const sl = S.si === 0 && !S.fb ? `<div class="scene-location" style="color:${sc.color}">📍 ${sc.loc}</div>` : '';
 
     // Варианты ответов
@@ -333,9 +330,9 @@ function rP() {
         }
     }
 
-    // Кнопка "Далее"
+    // Кнопка "Далее" / "Завершить"
     const il = S.si === sc.steps.length - 1;
-    const nl = il ? 'Результаты →' : 'Далее →';
+    const nl = il ? 'Завершить →' : 'Далее →';
     const nc = il ? 'pri' : 'sec';
     const nb = S.fb ? `<button class="next-btn ${nc}" onclick="ns()">${nl}</button>` : '';
 
@@ -350,11 +347,12 @@ function rP() {
             <div class="hdr">
                 <div class="hdr-left">
                     <div class="live-dot"></div>
-                    <div class="hdr-num">Ситуация ${S.pos + 1}/${tn}</div>
+                    <span style="font-size:18px">${sc.icon}</span>
+                    <div class="hdr-num">${sc.title}</div>
                 </div>
                 <div class="hdr-right">
                     <div class="badge badge-time" id="tmr">⏱ ${fmt(S.el)}</div>
-                    <div class="badge badge-score">${cn}/${S.ans.length}</div>
+                    <div class="badge badge-score">${cn}/${sc.steps.length}</div>
                 </div>
             </div>
             <div class="global-progress">${gp}</div>
@@ -372,8 +370,9 @@ function rP() {
     `;
 }
 
-function rSR() {
-    const r = S.res[S.res.length - 1];
+// ─── Экран: Finish (итоги сценария) ──────────────────────
+function rFinish() {
+    const r = S.res;
     const sc = SC[r.oi];
     const c = r.ans.filter(a => a.ok).length;
     const p = Math.round(c / r.tot * 100);
@@ -383,9 +382,13 @@ function rSR() {
 
     const ft2 = sc.fl ? '<div class="false-tag">⚡ Ситуация-ловушка</div>' : '';
 
+    const perfectBanner = p === 100
+        ? '<div class="perfect-banner">Идеальный результат — все решения верны</div>'
+        : '';
+
     // Разбор ответов
     let rv = '';
-    r.ans.forEach((a, i) => {
+    r.ans.forEach((a) => {
         const s = sc.steps[a.si];
         let mc, mt;
         if (a.to) { mc = 't'; mt = '⏱'; }
@@ -406,9 +409,6 @@ function rSR() {
         `;
     });
 
-    const il = S.pos >= S.ord.length - 1;
-    const bl = il ? 'Общие итоги' : 'Следующая ситуация →';
-
     return `
         <div class="sc-result">
             <div class="sc-result-hdr">
@@ -417,13 +417,14 @@ function rSR() {
                 <p>${sc.icon} ${sc.title} · ${fmt(r.el)}</p>
                 ${ft2}
             </div>
+            ${perfectBanner}
             <div class="stats-row">
                 <div class="stat-card">
                     <div class="v" style="color:#2ec4b6">${c}/${r.tot}</div>
                     <div class="l">Верных</div>
                 </div>
                 <div class="stat-card">
-                    <div class="v" style="color:${g.c}">${p}%</div>
+                    <div class="v" style="color:${g.c}" id="finish-pct">0%</div>
                     <div class="l">Точность</div>
                 </div>
                 <div class="stat-card">
@@ -437,73 +438,14 @@ function rSR() {
                 <div class="sum-label" style="color:${sc.color}">📋 Запомните</div>
                 <p class="sum-text">${sc.sum}</p>
             </div>
-            <button class="next-btn pri" onclick="nsc()">${bl}</button>
+            <button class="btn-primary" style="width:100%" onclick="begin()">Сыграть ещё</button>
+            <button class="next-btn sec" onclick="showStats()" style="margin-top:10px">📊 Статистика</button>
+            <button class="next-btn sec" onclick="rst()" style="margin-top:10px">← Главная</button>
         </div>
     `;
 }
 
-function rF() {
-    let tc = 0, tq = 0, tcr = 0, tto = 0, tt = 0, sr = '';
-
-    S.res.forEach(r => {
-        const sc = SC[r.oi];
-        const c = r.ans.filter(a => a.ok).length;
-        const p = Math.round(c / r.tot * 100);
-        const g = gr(p);
-
-        tc += c;
-        tq += r.tot;
-        tt += r.el;
-        tcr += r.ans.filter(a => a.cr).length;
-        tto += r.ans.filter(a => a.to).length;
-
-        const fl = sc.fl ? ' <span style="font-size:10px;color:#818cf8">ловушка</span>' : '';
-        sr += `
-            <div class="sc-row">
-                <div class="ic">${sc.icon}</div>
-                <div class="info">
-                    <div class="nm">${sc.title}${fl}</div>
-                    <div class="det">${c}/${r.tot} · ${fmt(r.el)}</div>
-                </div>
-                <div class="pct" style="color:${g.c}">${p}%</div>
-            </div>
-        `;
-    });
-
-    const tp = Math.round(tc / tq * 100);
-    const g = gr(tp);
-
-    return `
-        <div class="final">
-            <div style="font-size:56px;animation:scale-in .5s ease">${g.e}</div>
-            <h2 style="color:${g.c}">${g.l}</h2>
-            <div class="sub">12 ситуаций · ${fmt(tt)}</div>
-            <div class="final-stats">
-                <div class="final-stat">
-                    <div class="v" style="color:${g.c}">${tp}%</div>
-                    <div class="l">Точность</div>
-                </div>
-                <div class="final-stat">
-                    <div class="v" style="color:#2ec4b6">${tc}/${tq}</div>
-                    <div class="l">Верных</div>
-                </div>
-                <div class="final-stat">
-                    <div class="v" style="color:${tcr > 0 ? '#e63946' : '#2ec4b6'}">${tcr}</div>
-                    <div class="l">Критических</div>
-                </div>
-                <div class="final-stat">
-                    <div class="v" style="color:${tto > 0 ? '#e63946' : '#6b7280'}">${tto}</div>
-                    <div class="l">Таймаутов</div>
-                </div>
-            </div>
-            <div style="text-align:left;margin-bottom:20px">${sr}</div>
-            <button class="btn-primary" style="width:100%" onclick="rst()">Пройти заново</button>
-            <button class="next-btn sec" onclick="showStats()" style="margin-top:10px">📊 Посмотреть статистику</button>
-            <p style="color:#4b5563;font-size:12px;margin-top:16px">Порядок и варианты будут перемешаны</p>
-        </div>
-    `;
-}
-
+// ─── Экран: Статистика ────────────────────────────────────
 function rStats(history) {
 
     if (history.length === 0) {
@@ -624,6 +566,7 @@ function rStats(history) {
     `;
 }
 
+// ─── Экран: Лидерборд ────────────────────────────────────
 function rLeaderboard(data) {
     const { leaderboard, my_id } = data;
 
@@ -642,7 +585,7 @@ function rLeaderboard(data) {
     let rows = '';
     leaderboard.forEach((u, i) => {
         const isMe = u.id === my_id;
-        const g = gr(u.best_pct);
+        const g = gr(u.avg_pct);
         let medal = '';
         if (i === 0) medal = '🥇';
         else if (i === 1) medal = '🥈';
@@ -658,7 +601,7 @@ function rLeaderboard(data) {
                     <div class="lb-name">${u.name}${isMe ? ' (вы)' : ''}</div>
                     <div class="lb-detail">${u.games_played} ${u.games_played === 1 ? 'игра' : u.games_played < 5 ? 'игры' : 'игр'}</div>
                 </div>
-                <div class="lb-score" style="color:${g.c}">${u.best_pct}%</div>
+                <div class="lb-score" style="color:${g.c}">${u.avg_pct}%</div>
             </div>
         `;
     });
@@ -667,7 +610,7 @@ function rLeaderboard(data) {
         <div style="animation:fade-in .4s ease;padding-top:24px">
             <button class="next-btn sec" style="width:auto;padding:10px 20px;margin-bottom:24px" onclick="rst()">← Назад</button>
             <h2 style="font-family:'Outfit';font-size:22px;font-weight:800;margin-bottom:4px">🏆 Лидерборд</h2>
-            <p style="color:#6b7280;font-size:13px;margin-bottom:20px">Лучший результат каждого игрока</p>
+            <p style="color:#6b7280;font-size:13px;margin-bottom:20px">Среднее по всем сценариям</p>
             <div class="lb-list">${rows}</div>
         </div>
     `;

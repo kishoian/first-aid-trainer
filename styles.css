@@ -92,6 +92,9 @@ body{font-family:'Manrope',sans-serif;background:#0c1222;color:#e4e4e7;min-heigh
 .next-btn.sec:active{background:rgba(255,255,255,.15)}
 .next-btn.pri{background:linear-gradient(135deg,#e63946,#c1121f);box-shadow:0 4px 20px rgba(230,57,70,.25)}
 
+/* Perfect Banner */
+.perfect-banner{background:linear-gradient(135deg,rgba(46,196,182,.12),rgba(46,196,182,.06));border:1px solid rgba(46,196,182,.25);border-radius:12px;padding:12px 16px;text-align:center;color:#2ec4b6;font-weight:600;font-size:15px;margin-bottom:16px;animation:scale-in .5s ease}
+
 /* Scenario Result */
 .sc-result{animation:fade-in .5s ease;padding-top:20px}
 .sc-result-hdr{text-align:center;margin-bottom:24px}

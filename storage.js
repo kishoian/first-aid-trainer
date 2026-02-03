@@ -29,28 +29,21 @@ function authHeaders() {
     };
 }
 
-// Сохранить результат игры на сервер
+// Сохранить результат одного сценария на сервер
 async function saveRun(res) {
-    const totalCorrect = res.reduce((s, r) => s + r.ans.filter(a => a.ok).length, 0);
-    const totalSteps = res.reduce((s, r) => s + r.tot, 0);
+    const totalCorrect = res.ans.filter(a => a.ok).length;
+    const totalSteps = res.tot;
     const totalPct = Math.round(totalCorrect / totalSteps * 100);
-    const crits = res.reduce((s, r) => s + r.ans.filter(a => a.cr).length, 0);
-    const timeouts = res.reduce((s, r) => s + r.ans.filter(a => a.to).length, 0);
+    const crits = res.ans.filter(a => a.cr).length;
+    const timeouts = res.ans.filter(a => a.to).length;
+    const scenarioId = SC[res.oi]?.id || null;
 
     try {
-        const resp = await fetch('/api/results', {
+        await fetch('/api/results', {
             method: 'POST',
             headers: authHeaders(),
-            body: JSON.stringify({ totalPct, totalCorrect, totalSteps, crits, timeouts })
+            body: JSON.stringify({ totalPct, totalCorrect, totalSteps, crits, timeouts, scenarioId })
         });
-
-        if (resp.ok) {
-            // Показать уведомление в Telegram
-            if (tg?.showAlert) {
-                const g = gr(totalPct);
-                tg.showAlert(`${g.e} Результат сохранён!\n${totalPct}% точность`);
-            }
-        }
     } catch (e) {
         console.error('Не удалось сохранить результат:', e);
     }
@@ -63,16 +56,19 @@ async function loadHistory() {
         if (!resp.ok) return [];
         const data = await resp.json();
 
-        // Преобразуем в формат, аналогичный старому localStorage
-        return data.runs.map(r => ({
-            ts: r.created_at,
-            totalPct: r.total_pct,
-            scenarios: [{
-                pct: r.total_pct,
-                crits: r.crits,
-                timeouts: r.timeouts
-            }]
-        }));
+        return data.runs.map(r => {
+            const scIdx = SC.findIndex(s => s.id === r.scenario_id);
+            return {
+                ts: r.created_at,
+                totalPct: r.total_pct,
+                scenarios: [{
+                    oi: scIdx >= 0 ? scIdx : -1,
+                    pct: r.total_pct,
+                    crits: r.crits,
+                    timeouts: r.timeouts
+                }]
+            };
+        });
     } catch {
         return [];
     }

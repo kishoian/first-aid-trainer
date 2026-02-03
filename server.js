@@ -66,6 +66,12 @@ db.exec(`
     CREATE INDEX IF NOT EXISTS idx_runs_pct ON runs(total_pct DESC);
 `);
 
+// Миграция: добавить scenario_id если его нет
+const runsCols = db.prepare('PRAGMA table_info(runs)').all();
+if (!runsCols.find(c => c.name === 'scenario_id')) {
+    db.exec('ALTER TABLE runs ADD COLUMN scenario_id TEXT');
+}
+
 // ─── Верификация initData от Telegram ───────────────────────
 function verifyInitData(initData) {
     if (!initData) return null;
@@ -130,7 +136,7 @@ function authMiddleware(req, res, next) {
 
 // POST /api/results — сохранить результат игры
 app.post('/api/results', authMiddleware, (req, res) => {
-    const { totalPct, totalCorrect, totalSteps, crits, timeouts } = req.body;
+    const { totalPct, totalCorrect, totalSteps, crits, timeouts, scenarioId } = req.body;
 
     if (
         typeof totalPct !== 'number' ||
@@ -144,8 +150,8 @@ app.post('/api/results', authMiddleware, (req, res) => {
     }
 
     const insert = db.prepare(`
-        INSERT INTO runs (user_id, total_pct, total_correct, total_steps, crits, timeouts, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO runs (user_id, total_pct, total_correct, total_steps, crits, timeouts, created_at, scenario_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
     insert.run(
         req.user.id,
@@ -154,7 +160,8 @@ app.post('/api/results', authMiddleware, (req, res) => {
         totalSteps,
         crits || 0,
         timeouts || 0,
-        Date.now()
+        Date.now(),
+        scenarioId || null
     );
 
     res.json({ ok: true });
@@ -163,7 +170,7 @@ app.post('/api/results', authMiddleware, (req, res) => {
 // GET /api/my-results — мои результаты
 app.get('/api/my-results', authMiddleware, (req, res) => {
     const runs = db.prepare(`
-        SELECT total_pct, total_correct, total_steps, crits, timeouts, created_at
+        SELECT total_pct, total_correct, total_steps, crits, timeouts, created_at, scenario_id
         FROM runs
         WHERE user_id = ?
         ORDER BY created_at DESC
@@ -180,27 +187,24 @@ app.get('/api/leaderboard', authMiddleware, (req, res) => {
             u.id,
             u.name,
             u.photo_url,
-            MAX(r.total_pct) AS best_pct,
-            COUNT(r.id) AS games_played,
-            MAX(r.total_correct) AS best_correct,
-            MAX(r.total_steps) AS best_steps
+            ROUND(AVG(r.total_pct)) AS avg_pct,
+            COUNT(r.id) AS games_played
         FROM users u
         JOIN runs r ON r.user_id = u.id
         GROUP BY u.id
-        ORDER BY best_pct DESC, games_played DESC
+        ORDER BY avg_pct DESC, games_played DESC
         LIMIT 50
     `).all();
 
-    // Добавляем позицию текущего пользователя, даже если не в топ-50
-    const myBest = db.prepare(`
-        SELECT MAX(total_pct) AS best_pct
+    const myAvg = db.prepare(`
+        SELECT ROUND(AVG(total_pct)) AS avg_pct
         FROM runs WHERE user_id = ?
     `).get(req.user.id);
 
     res.json({
         leaderboard,
         my_id: req.user.id,
-        my_best: myBest?.best_pct || null
+        my_avg: myAvg?.avg_pct || null
     });
 });
 
