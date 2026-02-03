@@ -59,6 +59,7 @@ db.exec(`
         crits INTEGER NOT NULL DEFAULT 0,
         timeouts INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
+        scenario_id TEXT,
         FOREIGN KEY (user_id) REFERENCES users(id)
     );
 
@@ -149,22 +150,26 @@ app.post('/api/results', authMiddleware, (req, res) => {
         return res.status(400).json({ error: 'Некорректные данные' });
     }
 
-    const insert = db.prepare(`
-        INSERT INTO runs (user_id, total_pct, total_correct, total_steps, crits, timeouts, created_at, scenario_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    insert.run(
-        req.user.id,
-        totalPct,
-        totalCorrect,
-        totalSteps,
-        crits || 0,
-        timeouts || 0,
-        Date.now(),
-        scenarioId || null
-    );
-
-    res.json({ ok: true });
+    try {
+        const insert = db.prepare(`
+            INSERT INTO runs (user_id, total_pct, total_correct, total_steps, crits, timeouts, created_at, scenario_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        insert.run(
+            req.user.id,
+            totalPct,
+            totalCorrect,
+            totalSteps,
+            crits || 0,
+            timeouts || 0,
+            Date.now(),
+            scenarioId || null
+        );
+        res.json({ ok: true });
+    } catch (e) {
+        console.error('INSERT runs failed:', e.message);
+        res.status(500).json({ error: 'Ошибка сохранения' });
+    }
 });
 
 // GET /api/my-results — мои результаты

@@ -39,11 +39,15 @@ async function saveRun(res) {
     const scenarioId = SC[res.oi]?.id || null;
 
     try {
-        await fetch('/api/results', {
+        const resp = await fetch('/api/results', {
             method: 'POST',
             headers: authHeaders(),
             body: JSON.stringify({ totalPct, totalCorrect, totalSteps, crits, timeouts, scenarioId })
         });
+        if (!resp.ok) {
+            const err = await resp.text();
+            console.error('saveRun HTTP ' + resp.status + ':', err);
+        }
     } catch (e) {
         console.error('Не удалось сохранить результат:', e);
     }
