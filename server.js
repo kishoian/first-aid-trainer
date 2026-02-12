@@ -24,15 +24,68 @@ if (!BOT_TOKEN) {
     process.exit(1);
 }
 
+const DEFAULT_WEBAPP_URL = 'https://firstaid.kishoianrs.ru';
+const WEBAPP_URL = (process.env.WEBAPP_URL || DEFAULT_WEBAPP_URL).trim();
+const WEBAPP_FALLBACK_URL = (process.env.WEBAPP_FALLBACK_URL || '').trim();
+
+function collectWebAppUrls() {
+    const urls = [WEBAPP_URL];
+    if (WEBAPP_FALLBACK_URL) urls.push(WEBAPP_FALLBACK_URL);
+
+    const uniq = [];
+    for (const raw of urls) {
+        if (!raw) continue;
+        try {
+            const parsed = new URL(raw);
+            if (parsed.protocol !== 'https:') continue;
+            if (!uniq.includes(parsed.toString())) {
+                uniq.push(parsed.toString());
+            }
+        } catch {
+            // игнорируем невалидные URL
+        }
+    }
+    return uniq;
+}
+
+const WEBAPP_URLS = collectWebAppUrls();
+if (!WEBAPP_URLS.length) {
+    console.error('❌ WEBAPP_URL не задан или невалиден. Укажите https URL в .env');
+    process.exit(1);
+}
+
 const { Telegraf } = require('telegraf');
 const bot = new Telegraf(BOT_TOKEN);
 
+function miniAppKeyboard() {
+    const rows = [
+        [{ text: 'Открыть тренажёр', web_app: { url: WEBAPP_URLS[0] } }]
+    ];
+    if (WEBAPP_URLS[1]) {
+        rows.push([{ text: 'Открыть резервный вход', web_app: { url: WEBAPP_URLS[1] } }]);
+    }
+    return rows;
+}
+
+function miniAppReplyText() {
+    if (WEBAPP_URLS[1]) {
+        return 'Добро пожаловать в тренажёр первой помощи!\n\nЕсли основная кнопка не открывается, используйте резервный вход.';
+    }
+    return 'Добро пожаловать в тренажёр первой помощи!\n\nНажми кнопку ниже, чтобы начать.';
+}
+
 bot.start((ctx) => {
-    ctx.reply('Добро пожаловать в тренажёр первой помощи!\n\nНажми кнопку ниже, чтобы начать.', {
+    ctx.reply(miniAppReplyText(), {
         reply_markup: {
-            inline_keyboard: [
-                [{ text: 'Открыть тренажёр', web_app: { url: 'https://firstaid.kishoianrs.ru' } }]
-            ]
+            inline_keyboard: miniAppKeyboard()
+        }
+    });
+});
+
+bot.command('app', (ctx) => {
+    ctx.reply(miniAppReplyText(), {
+        reply_markup: {
+            inline_keyboard: miniAppKeyboard()
         }
     });
 });
@@ -373,6 +426,10 @@ app.use(express.static(path.join(__dirname)));
 // ─── Старт сервера ──────────────────────────────────────────
 app.listen(PORT, () => {
     console.log(`✅ Сервер запущен на http://localhost:${PORT}`);
+    console.log(`🌐 Mini App URL: ${WEBAPP_URLS[0]}`);
+    if (WEBAPP_URLS[1]) {
+        console.log(`🌐 Mini App резерв: ${WEBAPP_URLS[1]}`);
+    }
 });
 
 bot.launch();
