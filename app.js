@@ -22,6 +22,58 @@ function shuf(a) {
     return b;
 }
 
+function ruPlural(n, one, few, many) {
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    if (mod10 === 1 && mod100 !== 11) return one;
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few;
+    return many;
+}
+
+function dayKey(ts) {
+    const d = new Date(ts);
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+}
+
+function calcStreakByHistory(items) {
+    if (!items.length) return 0;
+    const keys = [...new Set(items.map(i => dayKey(i.ts)))].sort().reverse();
+    const today = dayKey(Date.now());
+    const yesterday = dayKey(Date.now() - 24 * 60 * 60 * 1000);
+
+    if (keys[0] !== today && keys[0] !== yesterday) return 0;
+
+    let streak = 1;
+    let prev = new Date(`${keys[0]}T00:00:00Z`);
+    for (let i = 1; i < keys.length; i++) {
+        const cur = new Date(`${keys[i]}T00:00:00Z`);
+        const diffDays = Math.round((prev - cur) / (24 * 60 * 60 * 1000));
+        if (diffDays !== 1) break;
+        streak++;
+        prev = cur;
+    }
+    return streak;
+}
+
+function calcPoints(pct, crits, timeouts) {
+    const perfectBonus = pct === 100 ? 30 : 0;
+    const strongBonus = pct >= 80 ? 10 : pct >= 60 ? 4 : 0;
+    const safetyPenalty = crits * 12 + timeouts * 8;
+    return Math.max(0, Math.round(pct + perfectBonus + strongBonus - safetyPenalty));
+}
+
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 // Константы и состояние
 const DT = 20; // Decision Timer (секунды на ответ)
 let lastSc = -1; // последний сценарий (для исключения повторов подряд)
@@ -39,7 +91,9 @@ let S = {
     dt: DT,           // оставшееся время на решение
     t1: null,         // интервал общего таймера
     t2: null,         // интервал таймера решения
-    res: null         // результат текущего сценария
+    res: null,        // результат текущего сценария
+    lbQ: '',          // строка поиска в лидерборде
+    lbData: null      // кэш лидерборда для быстрого фильтра
 };
 
 // Функции работы со сценариями
@@ -164,7 +218,22 @@ function showStats() {
 
 function showLeaderboard() {
     S.sc = 'leaderboard';
+    S.lbQ = '';
     R();
+}
+
+function setLeaderboardFilter(value) {
+    S.lbQ = value || '';
+    if (S.sc !== 'leaderboard' || !S.lbData) return;
+    const a = document.getElementById('app');
+    if (!a) return;
+    a.innerHTML = rLeaderboard(S.lbData);
+    const input = a.querySelector('.lb-search');
+    if (input) {
+        const pos = S.lbQ.length;
+        input.focus();
+        input.setSelectionRange(pos, pos);
+    }
 }
 
 // Анимация счётчика на финише
@@ -199,20 +268,25 @@ async function renderIntro() {
     const a = document.getElementById('app');
     a.innerHTML = '<div style="text-align:center;padding:60px 0"><div style="font-size:36px">⏳</div></div>';
     const history = await loadHistory();
+    if (S.sc !== 'intro') return;
     a.innerHTML = rI(history);
 }
 
 async function renderStats() {
     const a = document.getElementById('app');
     a.innerHTML = '<div style="text-align:center;padding:60px 0"><div style="font-size:36px">⏳</div></div>';
-    const history = await loadHistory();
-    a.innerHTML = rStats(history);
+    const [history, lbData] = await Promise.all([loadHistory(), loadLeaderboard()]);
+    if (S.sc !== 'stats') return;
+    S.lbData = lbData;
+    a.innerHTML = rStats(history, lbData);
 }
 
 async function renderLeaderboard() {
     const a = document.getElementById('app');
     a.innerHTML = '<div style="text-align:center;padding:60px 0"><div style="font-size:36px">⏳</div></div>';
     const data = await loadLeaderboard();
+    if (S.sc !== 'leaderboard') return;
+    S.lbData = data;
     a.innerHTML = rLeaderboard(data);
 }
 
@@ -223,7 +297,7 @@ function rI(history) {
         const best = Math.max(...history.map(r => r.totalPct));
         const avg = Math.round(history.reduce((s, r) => s + r.totalPct, 0) / history.length);
         const n = history.length;
-        const gw = n === 1 ? 'сценарий' : n < 5 ? 'сценария' : 'сценариев';
+        const gw = ruPlural(n, 'сценарий', 'сценария', 'сценариев');
         teaser = `
             <div class="intro-teaser">
                 <span>Лучший: <b style="color:${gr(best).c}">${best}%</b> · Ср: <b style="color:${gr(avg).c}">${avg}%</b> · ${n} ${gw}</span>
@@ -378,6 +452,7 @@ function rFinish() {
     const p = Math.round(c / r.tot * 100);
     const cr = r.ans.filter(a => a.cr).length;
     const to = r.ans.filter(a => a.to).length;
+    const pts = calcPoints(p, cr, to);
     const g = gr(p);
 
     const ft2 = sc.fl ? '<div class="false-tag">⚡ Ситуация-ловушка</div>' : '';
@@ -431,6 +506,10 @@ function rFinish() {
                     <div class="v" style="color:${(cr + to) > 0 ? '#e63946' : '#2ec4b6'}">${cr}/${to}</div>
                     <div class="l">Крит/Таймаут</div>
                 </div>
+                <div class="stat-card">
+                    <div class="v" style="color:#ffd166">+${pts}</div>
+                    <div class="l">Рейтинг-очки</div>
+                </div>
             </div>
             <div class="review-title">Разбор</div>
             ${rv}
@@ -439,6 +518,7 @@ function rFinish() {
                 <p class="sum-text">${sc.sum}</p>
             </div>
             <button class="btn-primary" style="width:100%" onclick="begin()">Сыграть ещё</button>
+            <button class="next-btn sec" onclick="showLeaderboard()" style="margin-top:10px">🏆 Лидерборд клуба</button>
             <button class="next-btn sec" onclick="showStats()" style="margin-top:10px">📊 Статистика</button>
             <button class="next-btn sec" onclick="rst()" style="margin-top:10px">← Главная</button>
         </div>
@@ -446,15 +526,31 @@ function rFinish() {
 }
 
 // ─── Экран: Статистика ────────────────────────────────────
-function rStats(history) {
+function rStats(history, lbData) {
+    const leaderboard = lbData?.leaderboard || [];
+    const myLbRow = leaderboard.find(u => u.id === lbData?.my_id) || null;
+    const participants = lbData?.totals?.participants || leaderboard.length;
+    const totalClubRuns = lbData?.totals?.total_runs || leaderboard.reduce((sum, u) => sum + (u.games_played || 0), 0);
+    const activeWeek = lbData?.totals?.active_week || leaderboard.filter(u => (u.weekly_games || 0) > 0).length;
 
     if (history.length === 0) {
+        const clubInfo = participants
+            ? `
+                <div class="club-strip" style="margin-top:20px">
+                    <div class="club-strip-v">${participants}</div>
+                    <div class="club-strip-l">участников уже тренируются</div>
+                </div>
+            `
+            : '';
+
         return `
             <div style="animation:fade-in .4s ease;padding-top:24px">
                 <button class="next-btn sec" style="width:auto;padding:10px 20px;margin-bottom:32px" onclick="rst()">← Назад</button>
                 <div style="text-align:center;padding:60px 0">
                     <div style="font-size:48px;margin-bottom:16px">📊</div>
                     <p style="color:#6b7280;font-size:15px;line-height:1.6">Пока нет данных.<br>Пройдите тренажер хотя бы раз.</p>
+                    ${clubInfo}
+                    <button class="next-btn sec" onclick="showLeaderboard()" style="margin-top:18px">🏆 Открыть лидерборд</button>
                 </div>
             </div>
         `;
@@ -465,20 +561,58 @@ function rStats(history) {
     const bestScore = Math.max(...history.map(r => r.totalPct));
     const avgScore = Math.round(history.reduce((s, r) => s + r.totalPct, 0) / totalRuns);
     const totalCrits = history.reduce((s, r) => s + r.scenarios.reduce((ss, sc) => ss + sc.crits, 0), 0);
+    const totalTimeouts = history.reduce((s, r) => s + r.scenarios.reduce((ss, sc) => ss + sc.timeouts, 0), 0);
+    const totalPoints = history.reduce((s, r) => {
+        const sc = r.scenarios[0] || { crits: 0, timeouts: 0 };
+        return s + calcPoints(r.totalPct, sc.crits || 0, sc.timeouts || 0);
+    }, 0);
+    const streakDays = calcStreakByHistory(history);
+    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const weekRuns = history.filter(r => r.ts >= weekAgo).length;
+    const weekRunsWord = ruPlural(weekRuns, 'игра', 'игры', 'игр');
 
     const metrics = `
         <div class="stats-grid">
             <div class="stat-card"><div class="v" style="color:#2ec4b6">${totalRuns}</div><div class="l">Игр</div></div>
             <div class="stat-card"><div class="v" style="color:${gr(bestScore).c}">${bestScore}%</div><div class="l">Лучшее</div></div>
             <div class="stat-card"><div class="v" style="color:${gr(avgScore).c}">${avgScore}%</div><div class="l">Среднее</div></div>
-            <div class="stat-card"><div class="v" style="color:${totalCrits > 0 ? '#e63946' : '#2ec4b6'}">${totalCrits}</div><div class="l">Критических</div></div>
+            <div class="stat-card"><div class="v" style="color:#ffd166">${totalPoints}</div><div class="l">Очки</div></div>
+            <div class="stat-card"><div class="v" style="color:${streakDays > 0 ? '#2ec4b6' : '#6b7280'}">${streakDays}</div><div class="l">Серия дней</div></div>
+            <div class="stat-card"><div class="v" style="color:${(totalCrits + totalTimeouts) > 0 ? '#e63946' : '#2ec4b6'}">${totalCrits}/${totalTimeouts}</div><div class="l">Крит/Таймаут</div></div>
         </div>
     `;
+
+    let clubStrip = '';
+    if (participants > 0) {
+        const myRank = myLbRow?.rank || null;
+        const rankLine = myRank ? `#${myRank} из ${participants}` : 'появится после первой игры';
+        const percentile = myRank
+            ? (participants > 1
+                ? Math.round(((participants - myRank) / (participants - 1)) * 100)
+                : 100)
+            : null;
+        const percentileLine = percentile !== null ? `выше ${percentile}% участников` : '';
+
+        clubStrip = `
+            <div class="club-strip">
+                <div>
+                    <div class="club-strip-v">Клуб: ${rankLine}</div>
+                    <div class="club-strip-l">${percentileLine || `активных за 7 дней: ${activeWeek}`}</div>
+                </div>
+                <div class="club-strip-side">${weekRuns} ${weekRunsWord} за 7 дней</div>
+            </div>
+            <div class="club-snapshot">
+                <div class="club-shot"><div class="v">${participants}</div><div class="l">Участников</div></div>
+                <div class="club-shot"><div class="v">${totalClubRuns}</div><div class="l">Игр в клубе</div></div>
+                <div class="club-shot"><div class="v">${activeWeek}</div><div class="l">Активны за 7 дн</div></div>
+            </div>
+        `;
+    }
 
     // Динамика — последние 10 игр (только если 2+)
     let trend = '';
     if (history.length >= 2) {
-        const runs = history.slice(-10);
+        const runs = history.slice(0, 10).reverse();
         let bars = '', labels = '';
         runs.forEach(r => {
             const h = Math.max(3, r.totalPct / 100 * 48);
@@ -554,6 +688,7 @@ function rStats(history) {
         <div style="animation:fade-in .4s ease;padding-top:24px">
             <button class="next-btn sec" style="width:auto;padding:10px 20px;margin-bottom:24px" onclick="rst()">← Назад</button>
             <h2 style="font-family:'Outfit';font-size:22px;font-weight:800;margin-bottom:20px">Статистика</h2>
+            ${clubStrip}
             ${metrics}
             ${trend}
             <div class="review-title">По сценариям</div>
@@ -568,7 +703,14 @@ function rStats(history) {
 
 // ─── Экран: Лидерборд ────────────────────────────────────
 function rLeaderboard(data) {
-    const { leaderboard, my_id } = data;
+    const leaderboard = data?.leaderboard || [];
+    const myId = data?.my_id || null;
+    const totals = data?.totals || { participants: 0, total_runs: 0, active_week: 0 };
+    const myRow = leaderboard.find(u => u.id === myId) || null;
+    const q = S.lbQ.trim().toLowerCase();
+    const filtered = q
+        ? leaderboard.filter(u => (u.name || '').toLowerCase().includes(q))
+        : leaderboard;
 
     if (leaderboard.length === 0) {
         return `
@@ -583,35 +725,69 @@ function rLeaderboard(data) {
     }
 
     let rows = '';
-    leaderboard.forEach((u, i) => {
-        const isMe = u.id === my_id;
-        const g = gr(u.avg_pct);
+    filtered.forEach((u) => {
+        const isMe = u.id === myId;
+        const g = gr(u.avg_pct || 0);
         let medal = '';
-        if (i === 0) medal = '🥇';
-        else if (i === 1) medal = '🥈';
-        else if (i === 2) medal = '🥉';
+        if (u.rank === 1) medal = '🥇';
+        else if (u.rank === 2) medal = '🥈';
+        else if (u.rank === 3) medal = '🥉';
+        const gamesWord = ruPlural(u.games_played || 0, 'игра', 'игры', 'игр');
+        const streakWord = ruPlural(u.streak_days || 0, 'день', 'дня', 'дней');
+        const weekWord = ruPlural(u.weekly_games || 0, 'игра', 'игры', 'игр');
 
         rows += `
             <div class="lb-row ${isMe ? 'lb-me' : ''}">
-                <div class="lb-rank">${medal || (i + 1)}</div>
+                <div class="lb-rank">${medal || `#${u.rank}`}</div>
                 <div class="lb-avatar">
                     ${u.photo_url ? `<img src="${u.photo_url}" class="lb-img" alt="">` : '<div class="lb-img-ph">👤</div>'}
                 </div>
                 <div class="lb-info">
-                    <div class="lb-name">${u.name}${isMe ? ' (вы)' : ''}</div>
-                    <div class="lb-detail">${u.games_played} ${u.games_played === 1 ? 'игра' : u.games_played < 5 ? 'игры' : 'игр'}</div>
+                    <div class="lb-name">${escapeHtml(u.name)}${isMe ? ' (вы)' : ''}</div>
+                    <div class="lb-detail">${u.games_played} ${gamesWord} · лучший ${u.best_pct}% · серия ${u.streak_days} ${streakWord}</div>
+                    <div class="lb-meta">${u.total_points} очк. · ${u.weekly_games} ${weekWord} за 7 дн.</div>
                 </div>
-                <div class="lb-score" style="color:${g.c}">${u.avg_pct}%</div>
+                <div class="lb-score-wrap">
+                    <div class="lb-score" style="color:${g.c}">${u.rating}</div>
+                    <div class="lb-subscore">${u.avg_pct}% ср.</div>
+                </div>
             </div>
         `;
     });
+
+    const myCard = myRow
+        ? `
+            <div class="club-strip" style="margin-bottom:14px">
+                <div>
+                    <div class="club-strip-v">Ваше место: #${myRow.rank} из ${totals.participants}</div>
+                    <div class="club-strip-l">рейтинг ${myRow.rating} · средний результат ${myRow.avg_pct}%</div>
+                </div>
+                <div class="club-strip-side">+${myRow.total_points} очк.</div>
+            </div>
+        `
+        : '';
+
+    const emptyFiltered = filtered.length === 0
+        ? '<div style="text-align:center;color:#6b7280;padding:32px 0">Никого не найдено по этому запросу.</div>'
+        : `<div class="lb-list">${rows}</div>`;
 
     return `
         <div style="animation:fade-in .4s ease;padding-top:24px">
             <button class="next-btn sec" style="width:auto;padding:10px 20px;margin-bottom:24px" onclick="rst()">← Назад</button>
             <h2 style="font-family:'Outfit';font-size:22px;font-weight:800;margin-bottom:4px">🏆 Лидерборд</h2>
-            <p style="color:#6b7280;font-size:13px;margin-bottom:20px">Среднее по всем сценариям</p>
-            <div class="lb-list">${rows}</div>
+            <p style="color:#6b7280;font-size:13px;margin-bottom:12px">Рейтинг: точность + стабильность + активность за неделю</p>
+            <div class="club-snapshot" style="margin-bottom:14px">
+                <div class="club-shot"><div class="v">${totals.participants}</div><div class="l">Участников</div></div>
+                <div class="club-shot"><div class="v">${totals.total_runs}</div><div class="l">Всего игр</div></div>
+                <div class="club-shot"><div class="v">${totals.active_week}</div><div class="l">Активны за 7 дн</div></div>
+            </div>
+            ${myCard}
+            <div class="lb-toolbar">
+                <input class="lb-search" type="text" value="${escapeHtml(S.lbQ)}" placeholder="Поиск участника" oninput="setLeaderboardFilter(this.value)">
+                <button class="stats-btn" onclick="renderLeaderboard()">Обновить</button>
+            </div>
+            <p class="lb-count">Показано ${filtered.length} из ${leaderboard.length}</p>
+            ${emptyFiltered}
         </div>
     `;
 }

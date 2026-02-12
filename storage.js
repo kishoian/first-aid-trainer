@@ -80,11 +80,26 @@ async function loadHistory() {
 
 // Загрузить лидерборд
 async function loadLeaderboard() {
+    const empty = {
+        leaderboard: [],
+        my_id: null,
+        my_rank: null,
+        totals: { participants: 0, total_runs: 0, active_week: 0 },
+        generated_at: null
+    };
+
     try {
         const resp = await fetch('/api/leaderboard', { headers: authHeaders() });
-        if (!resp.ok) return { leaderboard: [], my_id: null };
-        return await resp.json();
+        if (!resp.ok) return empty;
+
+        const data = await resp.json();
+        return {
+            ...empty,
+            ...data,
+            leaderboard: Array.isArray(data?.leaderboard) ? data.leaderboard : [],
+            totals: { ...empty.totals, ...(data?.totals || {}) }
+        };
     } catch {
-        return { leaderboard: [], my_id: null };
+        return empty;
     }
 }

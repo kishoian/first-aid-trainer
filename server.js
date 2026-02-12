@@ -10,7 +10,10 @@ if (fs.existsSync(envPath)) {
     fs.readFileSync(envPath, 'utf8').split('\n').forEach(line => {
         const [key, ...val] = line.split('=');
         if (key && !key.startsWith('#') && val.length) {
-            process.env[key.trim()] = val.join('=').trim();
+            const k = key.trim();
+            if (typeof process.env[k] === 'undefined') {
+                process.env[k] = val.join('=').trim();
+            }
         }
     });
 }
@@ -67,10 +70,137 @@ db.exec(`
     CREATE INDEX IF NOT EXISTS idx_runs_pct ON runs(total_pct DESC);
 `);
 
-// Миграция: добавить scenario_id если его нет
-const runsCols = db.prepare('PRAGMA table_info(runs)').all();
-if (!runsCols.find(c => c.name === 'scenario_id')) {
-    db.exec('ALTER TABLE runs ADD COLUMN scenario_id TEXT');
+function ensureRunsColumn(columnName, columnDef) {
+    const runsCols = db.prepare('PRAGMA table_info(runs)').all();
+    if (!runsCols.find(c => c.name === columnName)) {
+        db.exec(`ALTER TABLE runs ADD COLUMN ${columnName} ${columnDef}`);
+    }
+}
+
+// Миграции старых БД
+ensureRunsColumn('scenario_id', 'TEXT');
+
+function dayKey(ts) {
+    const d = new Date(ts);
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+}
+
+function calcStreak(dayKeys) {
+    if (!dayKeys.length) return 0;
+    const uniqDesc = [...new Set(dayKeys)].sort().reverse();
+    const today = dayKey(Date.now());
+    const yesterday = dayKey(Date.now() - 24 * 60 * 60 * 1000);
+
+    // Считаем серию только если пользователь тренировался сегодня или вчера.
+    if (uniqDesc[0] !== today && uniqDesc[0] !== yesterday) return 0;
+
+    let streak = 1;
+    let prev = new Date(`${uniqDesc[0]}T00:00:00Z`);
+    for (let i = 1; i < uniqDesc.length; i++) {
+        const cur = new Date(`${uniqDesc[i]}T00:00:00Z`);
+        const diffDays = Math.round((prev - cur) / (24 * 60 * 60 * 1000));
+        if (diffDays !== 1) break;
+        streak++;
+        prev = cur;
+    }
+    return streak;
+}
+
+function runPoints(run) {
+    const pct = run.total_pct;
+    const perfectBonus = pct === 100 ? 30 : 0;
+    const strongBonus = pct >= 80 ? 10 : pct >= 60 ? 4 : 0;
+    const safetyPenalty = (run.crits || 0) * 12 + (run.timeouts || 0) * 8;
+    return Math.max(0, Math.round(pct + perfectBonus + strongBonus - safetyPenalty));
+}
+
+function buildLeaderboard(rows) {
+    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const byUser = new Map();
+
+    for (const row of rows) {
+        if (!byUser.has(row.user_id)) {
+            byUser.set(row.user_id, {
+                id: row.user_id,
+                name: row.name,
+                photo_url: row.photo_url,
+                games_played: 0,
+                sum_pct: 0,
+                best_pct: 0,
+                total_points: 0,
+                total_crits: 0,
+                total_timeouts: 0,
+                active_days: new Set(),
+                weekly_games: 0,
+                weekly_sum_pct: 0,
+                last_played_at: 0
+            });
+        }
+
+        const u = byUser.get(row.user_id);
+        u.games_played++;
+        u.sum_pct += row.total_pct;
+        u.best_pct = Math.max(u.best_pct, row.total_pct);
+        u.total_points += runPoints(row);
+        u.total_crits += row.crits || 0;
+        u.total_timeouts += row.timeouts || 0;
+        u.active_days.add(dayKey(row.created_at));
+        u.last_played_at = Math.max(u.last_played_at, row.created_at);
+
+        if (row.created_at >= weekAgo) {
+            u.weekly_games++;
+            u.weekly_sum_pct += row.total_pct;
+        }
+    }
+
+    const leaderboard = [...byUser.values()].map(u => {
+        const avg_pct = Math.round(u.sum_pct / u.games_played);
+        const weekly_avg_pct = u.weekly_games ? Math.round(u.weekly_sum_pct / u.weekly_games) : null;
+        const streak_days = calcStreak([...u.active_days]);
+        const consistency = Math.max(0, 100 - (u.best_pct - avg_pct));
+        const volumeBonus = Math.min(u.games_played, 40) * 0.6;
+        const weeklyBonus = Math.min(u.weekly_games, 14) * 1.4;
+        const safetyPenalty = u.total_crits * 1.5 + u.total_timeouts * 1.0;
+        const rating = Math.max(
+            0,
+            Math.round(avg_pct * 0.65 + u.best_pct * 0.2 + consistency * 0.1 + volumeBonus + weeklyBonus - safetyPenalty)
+        );
+
+        return {
+            id: u.id,
+            name: u.name,
+            photo_url: u.photo_url,
+            rating,
+            avg_pct,
+            best_pct: u.best_pct,
+            games_played: u.games_played,
+            total_points: u.total_points,
+            total_crits: u.total_crits,
+            total_timeouts: u.total_timeouts,
+            active_days: u.active_days.size,
+            streak_days,
+            weekly_games: u.weekly_games,
+            weekly_avg_pct,
+            last_played_at: u.last_played_at
+        };
+    });
+
+    leaderboard.sort((a, b) =>
+        b.rating - a.rating ||
+        b.avg_pct - a.avg_pct ||
+        b.total_points - a.total_points ||
+        b.games_played - a.games_played ||
+        b.last_played_at - a.last_played_at
+    );
+
+    leaderboard.forEach((u, i) => {
+        u.rank = i + 1;
+    });
+
+    return leaderboard;
 }
 
 // ─── Верификация initData от Telegram ───────────────────────
@@ -138,6 +268,9 @@ function authMiddleware(req, res, next) {
 // POST /api/results — сохранить результат игры
 app.post('/api/results', authMiddleware, (req, res) => {
     const { totalPct, totalCorrect, totalSteps, crits, timeouts, scenarioId } = req.body;
+    const safeCrits = Number.isFinite(crits) ? Math.max(0, Math.round(crits)) : 0;
+    const safeTimeouts = Number.isFinite(timeouts) ? Math.max(0, Math.round(timeouts)) : 0;
+    const safeScenarioId = typeof scenarioId === 'string' && scenarioId.trim() ? scenarioId.trim() : null;
 
     if (
         typeof totalPct !== 'number' ||
@@ -160,10 +293,10 @@ app.post('/api/results', authMiddleware, (req, res) => {
             totalPct,
             totalCorrect,
             totalSteps,
-            crits || 0,
-            timeouts || 0,
+            safeCrits,
+            safeTimeouts,
             Date.now(),
-            scenarioId || null
+            safeScenarioId
         );
         res.json({ ok: true });
     } catch (e) {
@@ -179,37 +312,42 @@ app.get('/api/my-results', authMiddleware, (req, res) => {
         FROM runs
         WHERE user_id = ?
         ORDER BY created_at DESC
-        LIMIT 50
+        LIMIT 200
     `).all(req.user.id);
 
     res.json({ runs });
 });
 
-// GET /api/leaderboard — топ-50 по лучшему результату
+// GET /api/leaderboard — общий рейтинг всех участников с тренировками
 app.get('/api/leaderboard', authMiddleware, (req, res) => {
-    const leaderboard = db.prepare(`
+    const rows = db.prepare(`
         SELECT
-            u.id,
+            r.user_id,
             u.name,
             u.photo_url,
-            ROUND(AVG(r.total_pct)) AS avg_pct,
-            COUNT(r.id) AS games_played
-        FROM users u
-        JOIN runs r ON r.user_id = u.id
-        GROUP BY u.id
-        ORDER BY avg_pct DESC, games_played DESC
-        LIMIT 50
+            r.total_pct,
+            r.crits,
+            r.timeouts,
+            r.created_at
+        FROM runs r
+        JOIN users u ON u.id = r.user_id
+        ORDER BY r.created_at DESC
     `).all();
 
-    const myAvg = db.prepare(`
-        SELECT ROUND(AVG(total_pct)) AS avg_pct
-        FROM runs WHERE user_id = ?
-    `).get(req.user.id);
+    const leaderboard = buildLeaderboard(rows);
+    const myRow = leaderboard.find(u => u.id === req.user.id) || null;
+    const totals = {
+        participants: leaderboard.length,
+        total_runs: leaderboard.reduce((sum, u) => sum + u.games_played, 0),
+        active_week: leaderboard.filter(u => u.weekly_games > 0).length
+    };
 
     res.json({
         leaderboard,
         my_id: req.user.id,
-        my_avg: myAvg?.avg_pct || null
+        my_rank: myRow?.rank || null,
+        totals,
+        generated_at: Date.now()
     });
 });
 
@@ -224,5 +362,15 @@ app.listen(PORT, () => {
 bot.launch();
 console.log('✅ Бот запущен');
 
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+function stopBot(signal) {
+    try {
+        bot.stop(signal);
+    } catch (e) {
+        if (!String(e?.message || '').includes('Bot is not running')) {
+            console.error('Ошибка остановки бота:', e.message);
+        }
+    }
+}
+
+process.once('SIGINT', () => stopBot('SIGINT'));
+process.once('SIGTERM', () => stopBot('SIGTERM'));
