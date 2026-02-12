@@ -527,6 +527,12 @@ function rFinish() {
 
 // ─── Экран: Статистика ────────────────────────────────────
 function rStats(history, lbData) {
+    const authState = typeof getAuthState === 'function'
+        ? getAuthState()
+        : { failed: false, code: null };
+    const hasAuthData = typeof hasTelegramAuthData === 'function'
+        ? hasTelegramAuthData()
+        : false;
     const leaderboard = lbData?.leaderboard || [];
     const myLbRow = leaderboard.find(u => u.id === lbData?.my_id) || null;
     const participants = lbData?.totals?.participants || leaderboard.length;
@@ -534,6 +540,11 @@ function rStats(history, lbData) {
     const activeWeek = lbData?.totals?.active_week || leaderboard.filter(u => (u.weekly_games || 0) > 0).length;
 
     if (history.length === 0) {
+        const emptyText = authState.failed
+            ? (hasAuthData
+                ? 'Не прошла Telegram-авторизация.<br>Проверьте BOT_TOKEN на сервере и откройте Mini App заново.'
+                : 'Не получены Telegram-данные авторизации.<br>Откройте тренажер через кнопку бота, а не из браузера.')
+            : 'Пока нет данных.<br>Пройдите тренажер хотя бы раз.';
         const clubInfo = participants
             ? `
                 <div class="club-strip" style="margin-top:20px">
@@ -548,7 +559,7 @@ function rStats(history, lbData) {
                 <button class="next-btn sec" style="width:auto;padding:10px 20px;margin-bottom:32px" onclick="rst()">← Назад</button>
                 <div style="text-align:center;padding:60px 0">
                     <div style="font-size:48px;margin-bottom:16px">📊</div>
-                    <p style="color:#6b7280;font-size:15px;line-height:1.6">Пока нет данных.<br>Пройдите тренажер хотя бы раз.</p>
+                    <p style="color:#6b7280;font-size:15px;line-height:1.6">${emptyText}</p>
                     ${clubInfo}
                     <button class="next-btn sec" onclick="showLeaderboard()" style="margin-top:18px">🏆 Открыть лидерборд</button>
                 </div>
@@ -703,6 +714,12 @@ function rStats(history, lbData) {
 
 // ─── Экран: Лидерборд ────────────────────────────────────
 function rLeaderboard(data) {
+    const authState = typeof getAuthState === 'function'
+        ? getAuthState()
+        : { failed: false, code: null };
+    const hasAuthData = typeof hasTelegramAuthData === 'function'
+        ? hasTelegramAuthData()
+        : false;
     const leaderboard = data?.leaderboard || [];
     const myId = data?.my_id || null;
     const totals = data?.totals || { participants: 0, total_runs: 0, active_week: 0 };
@@ -713,12 +730,17 @@ function rLeaderboard(data) {
         : leaderboard;
 
     if (leaderboard.length === 0) {
+        const emptyText = authState.failed
+            ? (hasAuthData
+                ? 'Telegram-авторизация не прошла.<br>Проверьте BOT_TOKEN и перезапустите Mini App.'
+                : 'Mini App открыт без Telegram-данных.<br>Откройте его через кнопку бота.')
+            : 'Лидерборд пуст.<br>Пройдите тренажер — появится первый результат.';
         return `
             <div style="animation:fade-in .4s ease;padding-top:24px">
                 <button class="next-btn sec" style="width:auto;padding:10px 20px;margin-bottom:32px" onclick="rst()">← Назад</button>
                 <div style="text-align:center;padding:60px 0">
                     <div style="font-size:48px;margin-bottom:16px">🏆</div>
-                    <p style="color:#6b7280;font-size:15px;line-height:1.6">Лидерборд пуст.<br>Пройдите тренажер — появится первый результат.</p>
+                    <p style="color:#6b7280;font-size:15px;line-height:1.6">${emptyText}</p>
                 </div>
             </div>
         `;

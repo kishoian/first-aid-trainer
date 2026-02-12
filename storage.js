@@ -2,6 +2,38 @@
 
 const tg = window.Telegram?.WebApp;
 let TG_USER = null;
+const AUTH_STATE = { failed: false, code: null };
+
+function setAuthFailed(code = null) {
+    AUTH_STATE.failed = !!code;
+    AUTH_STATE.code = code;
+}
+
+function getAuthState() {
+    return { ...AUTH_STATE };
+}
+
+function readInitDataFromLocation() {
+    const fromHash = new URLSearchParams((window.location.hash || '').replace(/^#/, '')).get('tgWebAppData');
+    if (fromHash) return fromHash;
+    const fromSearch = new URLSearchParams(window.location.search || '').get('tgWebAppData');
+    return fromSearch || '';
+}
+
+function getInitData() {
+    return tg?.initData || readInitDataFromLocation() || '';
+}
+
+function hasTelegramAuthData() {
+    return !!getInitData();
+}
+
+function authUrl(url) {
+    const initData = getInitData();
+    if (!initData) return url;
+    const sep = url.includes('?') ? '&' : '?';
+    return `${url}${sep}initData=${encodeURIComponent(initData)}`;
+}
 
 function initTelegram() {
     if (!tg) {
@@ -18,11 +50,15 @@ function initTelegram() {
     tg.enableClosingConfirmation();
 
     TG_USER = tg.initDataUnsafe?.user || null;
+
+    if (getInitData()) {
+        setAuthFailed(null);
+    }
 }
 
 // Заголовок с initData для авторизации
 function authHeaders() {
-    const initData = tg?.initData || '';
+    const initData = getInitData();
     return {
         'Content-Type': 'application/json',
         'X-Telegram-InitData': initData
@@ -37,13 +73,19 @@ async function saveRun(res) {
     const crits = res.ans.filter(a => a.cr).length;
     const timeouts = res.ans.filter(a => a.to).length;
     const scenarioId = SC[res.oi]?.id || null;
+    const initData = getInitData();
 
     try {
-        const resp = await fetch('/api/results', {
+        const resp = await fetch(authUrl('/api/results'), {
             method: 'POST',
             headers: authHeaders(),
-            body: JSON.stringify({ totalPct, totalCorrect, totalSteps, crits, timeouts, scenarioId })
+            body: JSON.stringify({ totalPct, totalCorrect, totalSteps, crits, timeouts, scenarioId, initData })
         });
+        if (resp.status === 401) {
+            setAuthFailed('TG_AUTH_FAILED');
+        } else if (resp.ok) {
+            setAuthFailed(null);
+        }
         if (!resp.ok) {
             const err = await resp.text();
             console.error('saveRun HTTP ' + resp.status + ':', err);
@@ -56,8 +98,13 @@ async function saveRun(res) {
 // Загрузить мои результаты с сервера
 async function loadHistory() {
     try {
-        const resp = await fetch('/api/my-results', { headers: authHeaders() });
+        const resp = await fetch(authUrl('/api/my-results'), { headers: authHeaders() });
+        if (resp.status === 401) {
+            setAuthFailed('TG_AUTH_FAILED');
+            return [];
+        }
         if (!resp.ok) return [];
+        setAuthFailed(null);
         const data = await resp.json();
 
         return data.runs.map(r => {
@@ -89,8 +136,13 @@ async function loadLeaderboard() {
     };
 
     try {
-        const resp = await fetch('/api/leaderboard', { headers: authHeaders() });
+        const resp = await fetch(authUrl('/api/leaderboard'), { headers: authHeaders() });
+        if (resp.status === 401) {
+            setAuthFailed('TG_AUTH_FAILED');
+            return empty;
+        }
         if (!resp.ok) return empty;
+        setAuthFailed(null);
 
         const data = await resp.json();
         return {

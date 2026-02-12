@@ -204,6 +204,20 @@ function buildLeaderboard(rows) {
 }
 
 // ─── Верификация initData от Telegram ───────────────────────
+function buildDataCheckString(params, opts = {}) {
+    const excludeSignature = !!opts.excludeSignature;
+    const entries = [];
+
+    for (const [k, v] of params.entries()) {
+        if (k === 'hash') continue;
+        if (excludeSignature && k === 'signature') continue;
+        entries.push([k, v]);
+    }
+
+    entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return entries.map(([k, v]) => `${k}=${v}`).join('\n');
+}
+
 function verifyInitData(initData) {
     if (!initData) return null;
 
@@ -211,29 +225,28 @@ function verifyInitData(initData) {
     const hash = params.get('hash');
     if (!hash) return null;
 
-    params.delete('hash');
-
-    // Сортируем параметры по имени и собираем строку
-    const sorted = [...params.entries()]
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([k, v]) => `${k}=${v}`)
-        .join('\n');
-
     // secret_key = HMAC-SHA256(BOT_TOKEN, "WebAppData")
     const secretKey = crypto.createHmac('sha256', 'WebAppData')
         .update(BOT_TOKEN)
         .digest();
 
-    // Проверяем хеш
-    const expectedHash = crypto.createHmac('sha256', secretKey)
-        .update(sorted)
+    const expectedWithAll = crypto.createHmac('sha256', secretKey)
+        .update(buildDataCheckString(params))
         .digest('hex');
 
-    if (hash !== expectedHash) return null;
+    const expectedNoSignature = crypto.createHmac('sha256', secretKey)
+        .update(buildDataCheckString(params, { excludeSignature: true }))
+        .digest('hex');
+
+    if (hash !== expectedWithAll && hash !== expectedNoSignature) {
+        return null;
+    }
 
     // Парсим user из параметров
     try {
-        const user = JSON.parse(params.get('user'));
+        const rawUser = params.get('user');
+        if (!rawUser) return null;
+        const user = JSON.parse(rawUser);
         return user;
     } catch {
         return null;
@@ -242,11 +255,14 @@ function verifyInitData(initData) {
 
 // ─── Middleware: авторизация ─────────────────────────────────
 function authMiddleware(req, res, next) {
-    const initData = req.headers['x-telegram-initdata'] || req.body?.initData;
+    const initDataHeader = req.headers['x-telegram-initdata'];
+    const initDataBody = req.body?.initData;
+    const initDataQuery = req.query?.initData;
+    const initData = initDataHeader || initDataBody || initDataQuery;
     const user = verifyInitData(initData);
 
     if (!user) {
-        return res.status(401).json({ error: 'Авторизация не прошла' });
+        return res.status(401).json({ error: 'Авторизация не прошла', code: 'TG_AUTH_FAILED' });
     }
 
     // Сохраняем/обновляем пользователя в БД
